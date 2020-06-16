@@ -26,6 +26,11 @@ from queue import Queue
 
 show_animation = True
 
+# -- Global variables for multi-robot -- #
+robot_positions = []
+lock = threading.Lock()
+ROBOT_RADIUS = 0.5
+# -------------------------------------- #
 
 def log_fn(thd_name, msg):
     print('[INFO][{}] {}'.format(thd_name, msg))
@@ -61,6 +66,7 @@ class RRTStar(RRT):
         """
         self.connect_circle_dist = connect_circle_dist
         self.goal_node = self.Node(goal[0], goal[1])
+        self.static_obstacle_list = obstacle_list
 
     def planning(self, ret_queue, animation=True, search_until_max_iter=True):
         """
@@ -69,21 +75,42 @@ class RRTStar(RRT):
         animation: flag for animation on or off
         search_until_max_iter: search until max iteration for path improving or not
         """
+        global robot_positions
         thd_name = threading.currentThread().getName()
+        thd_idx = int(thd_name.split('-')[-1])
         log_fn(thd_name, "thread name: {}".format(thd_name))
         self.node_list = [self.start]
+        """
+        lock.acquire()
         log_fn(thd_name, "start point ==> x:{}, y:{}".format(self.start.x, self.start.y))
+        robot_position = (self.start.x, self.start.y, ROBOT_RADIUS)
+        if robot_position not in robot_positions:
+            robot_positions.append(robot_position)
+        print(robot_positions)
+        lock.release()
+        """
         for i in range(self.max_iter):
-            #print("Iter:", i, ", number of nodes:", len(self.node_list))
             log_fn(thd_name, "Iter: {}, number of nodes: {}".format(i, len(self.node_list)))
             rnd = self.get_random_node()
             nearest_ind = self.get_nearest_node_index(self.node_list, rnd)
             new_node = self.steer(self.node_list[nearest_ind], rnd, self.expand_dis)
-
+            lock.acquire()
+            other_robot_positions = [(position) for i, position in enumerate(robot_positions) if i != thd_idx and len(position) > 0]
+            if other_robot_positions:
+                other_robot_positions = other_robot_positions[0]
+            self.obstacle_list = self.obstacle_list + other_robot_positions
+            # print("self.obstacle_list", self.obstacle_list)
+            lock.release()
             if self.check_collision(new_node, self.obstacle_list):
+                # log_fn(thd_name, "collision free!")
                 near_inds = self.find_near_nodes(new_node)
                 new_node = self.choose_parent(new_node, near_inds)
                 if new_node:
+                    lock.acquire()
+                    new_robot_position = (new_node.x, new_node.y, ROBOT_RADIUS)
+                    if new_robot_position not in robot_positions[thd_idx]:
+                        robot_positions[thd_idx].append(new_robot_position)
+                    lock.release()
                     self.node_list.append(new_node)
                     self.rewire(new_node, near_inds)
 
@@ -94,16 +121,17 @@ class RRTStar(RRT):
                 last_index = self.search_best_goal_node()
                 if last_index:
                     ret_queue.put(self.generate_final_course(last_index))
-                    # return self.generate_final_course(last_index)
+                    return self.generate_final_course(last_index)
 
         log_fn(thd_name, "reached max iteration")
         log_fn(thd_name, "length of node_list: {}".format(len(self.node_list)))
         last_index = self.search_best_goal_node()
         if last_index:
             ret_queue.put(self.generate_final_course(last_index))
-            # return self.generate_final_course(last_index)
+            return self.generate_final_course(last_index)
+
         ret_queue.put(None)
-        #return None
+        return None
 
     def choose_parent(self, new_node, near_inds):
         if not near_inds:
@@ -189,7 +217,37 @@ class RRTStar(RRT):
                 self.propagate_cost_to_leaves(node)
 
 
+def draw_graph_multi_robot(rrt_star_robots, path_list):
+    plt.clf()
+    # for stopping simulation with the esc key.
+    plt.gcf().canvas.mpl_connect('key_release_event',
+                                 lambda event: [exit(0) if event.key == 'escape' else None])
+    color_list3 = ["#feb24c", "#377eb8","#e41a1c"]
+    for robot, path, color in zip(rrt_star_robots, path_list, color_list3):
+        """
+        for node in robot.node_list:
+            if node.parent:
+                plt.plot(node.path_x, node.path_y, "-g")
+        """
+        for (ox, oy, size) in robot.obstacle_list:
+            if size < 0.5:
+                robot.plot_circle(ox, oy, size, color=color)
+            robot.plot_circle(ox, oy, size)
+        #for (ox, oy, size) in robot.static_obstacle_list:
+        #    robot.plot_circle(ox, oy, size)
+
+        plt.plot(robot.start.x, robot.start.y, "xr")
+        plt.plot(robot.end.x, robot.end.y, "xr")
+        plt.plot([x for (x, y) in path], [y for (x, y) in path], '-r')
+        plt.axis("equal")
+        plt.axis([-2, 15, -2, 15])
+        plt.grid(True)
+        plt.pause(0.01)
+    plt.show()
+
 def main():
+    global robot_positions
+
     print("Start " + __file__)
 
     # ====Search Path with RRT====
@@ -222,12 +280,17 @@ def main():
     if len(multi_robot_config_list) != num_robots:
         print("The configuration of multi-robot is not enough!")
         return
+
+    for _ in range(0, num_robots):
+        robot_positions.append([])
+
     rrt_star_robots = []
     for i in range(0, num_robots):
         rrt_star_robots.append(RRTStar(start=multi_robot_config_list[i][0],
                                         goal=multi_robot_config_list[i][1],
                                         rand_area=space_size,
-                                        obstacle_list=obstacle_list))
+                                        obstacle_list=obstacle_list,
+                                        max_iter=50))
 
     start_time = time.time()
 
@@ -242,26 +305,31 @@ def main():
         robot.join()
 
     print("[INFO] Execution time: {0:.2f} secs".format(time.time() - start_time))
-    
+
     path_list = []
     while not thd_ret_queue.empty():
         path = thd_ret_queue.get()
         if path is None:
             print("Cannot find path")
+            path = []
         else:
             print("found path!!")
-            path_list.append(path)
-
+        path_list.append(path)
+    if not path_list:
+        return
+    print(path_list)
     # Draw final path
     if show_animation:
+        draw_graph_multi_robot(rrt_star_robots, path_list)
+        """
         for i in range(0, num_robots):
-            print(len(rrt_star_robots[i].node_list))
             rrt_star_robots[i].draw_graph()
-            plt.plot([x for (x, y) in path_list[i]], [y for (x, y) in path_list[i]], '-r')
+            if path_list[i]:
+                plt.plot([x for (x, y) in path_list[i]], [y for (x, y) in path_list[i]], '-r')
             plt.grid(True)
             plt.pause(0.01)  # Need for Mac
-            plt.show()
-
+        plt.show()
+        """
 
 if __name__ == '__main__':
     main()
