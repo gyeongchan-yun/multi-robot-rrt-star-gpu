@@ -9,6 +9,7 @@ author: Atsushi Sakai(@Atsushi_twi)
 import math
 import os
 import sys
+import time
 
 import matplotlib.pyplot as plt
 
@@ -20,7 +21,14 @@ try:
 except ImportError:
     raise
 
+import threading
+from queue import Queue
+
 show_animation = True
+
+
+def log_fn(thd_name, msg):
+    print('[INFO][{}] {}'.format(thd_name, msg))
 
 
 class RRTStar(RRT):
@@ -54,17 +62,20 @@ class RRTStar(RRT):
         self.connect_circle_dist = connect_circle_dist
         self.goal_node = self.Node(goal[0], goal[1])
 
-    def planning(self, animation=True, search_until_max_iter=True):
+    def planning(self, ret_queue, animation=True, search_until_max_iter=True):
         """
         rrt star path planning
 
         animation: flag for animation on or off
         search_until_max_iter: search until max iteration for path improving or not
         """
-
+        thd_name = threading.currentThread().getName()
+        log_fn(thd_name, "thread name: {}".format(thd_name))
         self.node_list = [self.start]
+        log_fn(thd_name, "start point ==> x:{}, y:{}".format(self.start.x, self.start.y))
         for i in range(self.max_iter):
-            print("Iter:", i, ", number of nodes:", len(self.node_list))
+            #print("Iter:", i, ", number of nodes:", len(self.node_list))
+            log_fn(thd_name, "Iter: {}, number of nodes: {}".format(i, len(self.node_list)))
             rnd = self.get_random_node()
             nearest_ind = self.get_nearest_node_index(self.node_list, rnd)
             new_node = self.steer(self.node_list[nearest_ind], rnd, self.expand_dis)
@@ -76,21 +87,23 @@ class RRTStar(RRT):
                     self.node_list.append(new_node)
                     self.rewire(new_node, near_inds)
 
-            if animation and i % 5 == 0:
-                self.draw_graph(rnd)
+            # if animation and i % 5 == 0:
+            #    self.draw_graph(rnd)
 
             if (not search_until_max_iter) and new_node:  # check reaching the goal
                 last_index = self.search_best_goal_node()
                 if last_index:
-                    return self.generate_final_course(last_index)
+                    ret_queue.put(self.generate_final_course(last_index))
+                    # return self.generate_final_course(last_index)
 
-        print("reached max iteration")
-
+        log_fn(thd_name, "reached max iteration")
+        log_fn(thd_name, "length of node_list: {}".format(len(self.node_list)))
         last_index = self.search_best_goal_node()
         if last_index:
-            return self.generate_final_course(last_index)
-
-        return None
+            ret_queue.put(self.generate_final_course(last_index))
+            # return self.generate_final_course(last_index)
+        ret_queue.put(None)
+        #return None
 
     def choose_parent(self, new_node, near_inds):
         if not near_inds:
@@ -142,7 +155,7 @@ class RRTStar(RRT):
         nnode = len(self.node_list) + 1
         r = self.connect_circle_dist * math.sqrt((math.log(nnode) / nnode))
         # if expand_dist exists, search vertices in a range no more than expand_dist
-        if hasattr(self, 'expand_dis'): 
+        if hasattr(self, 'expand_dis'):
             r = min(r, self.expand_dis)
         dist_list = [(node.x - new_node.x) ** 2 +
                      (node.y - new_node.y) ** 2 for node in self.node_list]
@@ -190,23 +203,61 @@ def main():
         (8, 10, 1),
         (6, 12, 1),
     ]  # [x,y,size(radius)]
+    space_size = [-2, 15]
 
     # Set Initial parameters
-    rrt_star = RRTStar(start=[0, 0],
-                       goal=[6, 10],
-                       rand_area=[-2, 15],
-                       obstacle_list=obstacle_list)
-    path = rrt_star.planning(animation=show_animation)
+    #"""                        # start   goal
+    multi_robot_config_list = [
+                                [[0, 0], [6, 10]],
+                                [[12, 0], [7, 8]],
+                              ]
+    num_robots = 2
+    #"""
+    """
+    multi_robot_config_list = [
+                                [[0, 0], [6, 10]],
+                              ]
+    num_robots = 1
+    """
+    if len(multi_robot_config_list) != num_robots:
+        print("The configuration of multi-robot is not enough!")
+        return
+    rrt_star_robots = []
+    for i in range(0, num_robots):
+        rrt_star_robots.append(RRTStar(start=multi_robot_config_list[i][0],
+                                        goal=multi_robot_config_list[i][1],
+                                        rand_area=space_size,
+                                        obstacle_list=obstacle_list))
 
-    if path is None:
-        print("Cannot find path")
-    else:
-        print("found path!!")
+    start_time = time.time()
 
-        # Draw final path
-        if show_animation:
-            rrt_star.draw_graph()
-            plt.plot([x for (x, y) in path], [y for (x, y) in path], '-r')
+    thd_ret_queue = Queue()
+    multi_robots = [threading.Thread(target=rrt_star_robots[i].planning,
+                                     name='robot-{}'.format(i),
+                                     args=(thd_ret_queue, show_animation,)
+                                     ) for i in range(0, num_robots)]
+    for robot in multi_robots:
+        robot.start()
+    for robot in multi_robots:
+        robot.join()
+
+    print("[INFO] Execution time: {0:.2f} secs".format(time.time() - start_time))
+    
+    path_list = []
+    while not thd_ret_queue.empty():
+        path = thd_ret_queue.get()
+        if path is None:
+            print("Cannot find path")
+        else:
+            print("found path!!")
+            path_list.append(path)
+
+    # Draw final path
+    if show_animation:
+        for i in range(0, num_robots):
+            print(len(rrt_star_robots[i].node_list))
+            rrt_star_robots[i].draw_graph()
+            plt.plot([x for (x, y) in path_list[i]], [y for (x, y) in path_list[i]], '-r')
             plt.grid(True)
             plt.pause(0.01)  # Need for Mac
             plt.show()
