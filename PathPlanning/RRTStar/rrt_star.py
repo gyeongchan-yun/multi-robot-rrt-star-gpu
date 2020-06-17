@@ -78,29 +78,26 @@ class RRTStar(RRT):
         global robot_positions
         thd_name = threading.currentThread().getName()
         thd_idx = int(thd_name.split('-')[-1])
-        log_fn(thd_name, "thread name: {}".format(thd_name))
+        # log_fn(thd_name, "thread name: {}".format(thd_name))
         self.node_list = [self.start]
-        """
-        lock.acquire()
-        log_fn(thd_name, "start point ==> x:{}, y:{}".format(self.start.x, self.start.y))
-        robot_position = (self.start.x, self.start.y, ROBOT_RADIUS)
-        if robot_position not in robot_positions:
-            robot_positions.append(robot_position)
-        print(robot_positions)
-        lock.release()
-        """
+
         for i in range(self.max_iter):
             log_fn(thd_name, "Iter: {}, number of nodes: {}".format(i, len(self.node_list)))
             rnd = self.get_random_node()
             nearest_ind = self.get_nearest_node_index(self.node_list, rnd)
             new_node = self.steer(self.node_list[nearest_ind], rnd, self.expand_dis)
             lock.acquire()
+            # log_fn(thd_name, "robot_positions: {}".format(robot_positions))
             other_robot_positions = [(position) for i, position in enumerate(robot_positions) if i != thd_idx and len(position) > 0]
             if other_robot_positions:
                 other_robot_positions = other_robot_positions[0]
-            self.obstacle_list = self.obstacle_list + other_robot_positions
-            # print("self.obstacle_list", self.obstacle_list)
+            # log_fn(thd_name, "other_robot_positions: {}".format(other_robot_positions))
+            for position in other_robot_positions:
+                if position not in self.obstacle_list:
+                    self.obstacle_list = self.obstacle_list + [position]
+            # log_fn(thd_name, "self.obstacle_list: {}".format(self.obstacle_list))
             lock.release()
+
             if self.check_collision(new_node, self.obstacle_list):
                 # log_fn(thd_name, "collision free!")
                 near_inds = self.find_near_nodes(new_node)
@@ -113,10 +110,12 @@ class RRTStar(RRT):
                     lock.release()
                     self.node_list.append(new_node)
                     self.rewire(new_node, near_inds)
-
-            # if animation and i % 5 == 0:
-            #    self.draw_graph(rnd)
-
+            """
+            lock.acquire()
+            if animation and i % 5 == 0:
+                self.draw_graph(rnd)
+            lock.release()
+            """
             if (not search_until_max_iter) and new_node:  # check reaching the goal
                 last_index = self.search_best_goal_node()
                 if last_index:
@@ -124,7 +123,7 @@ class RRTStar(RRT):
                     return self.generate_final_course(last_index)
 
         log_fn(thd_name, "reached max iteration")
-        log_fn(thd_name, "length of node_list: {}".format(len(self.node_list)))
+        # log_fn(thd_name, "length of node_list: {}".format(len(self.node_list)))
         last_index = self.search_best_goal_node()
         if last_index:
             ret_queue.put(self.generate_final_course(last_index))
@@ -222,7 +221,7 @@ def draw_graph_multi_robot(rrt_star_robots, path_list):
     # for stopping simulation with the esc key.
     plt.gcf().canvas.mpl_connect('key_release_event',
                                  lambda event: [exit(0) if event.key == 'escape' else None])
-    color_list3 = ["#feb24c", "#377eb8","#e41a1c"]
+    color_list3 = ["-g", "-r", "-b"] # ["#feb24c", "#377eb8","#e41a1c"]
     for robot, path, color in zip(rrt_star_robots, path_list, color_list3):
         """
         for node in robot.node_list:
@@ -230,15 +229,17 @@ def draw_graph_multi_robot(rrt_star_robots, path_list):
                 plt.plot(node.path_x, node.path_y, "-g")
         """
         for (ox, oy, size) in robot.obstacle_list:
-            if size < 0.5:
+            if size <= 0.5:
                 robot.plot_circle(ox, oy, size, color=color)
-            robot.plot_circle(ox, oy, size)
-        #for (ox, oy, size) in robot.static_obstacle_list:
-        #    robot.plot_circle(ox, oy, size)
+            else:
+                robot.plot_circle(ox, oy, size)
 
-        plt.plot(robot.start.x, robot.start.y, "xr")
-        plt.plot(robot.end.x, robot.end.y, "xr")
-        plt.plot([x for (x, y) in path], [y for (x, y) in path], '-r')
+        for node in robot.node_list:
+            plt.plot(node.x, node.y, "o{}".format(color.split('-')[-1]))
+
+        plt.plot(robot.start.x, robot.start.y, "x{}".format(color.split('-')[-1]))
+        plt.plot(robot.end.x, robot.end.y, "x{}".format(color.split('-')[-1]))
+        plt.plot([x for (x, y) in path], [y for (x, y) in path], color)
         plt.axis("equal")
         plt.axis([-2, 15, -2, 15])
         plt.grid(True)
@@ -264,6 +265,14 @@ def main():
     space_size = [-2, 15]
 
     # Set Initial parameters
+    """                        # start   goal
+    multi_robot_config_list = [
+                                [[0, 0], [6, 10]],
+                                [[12, 0], [7, 8]],
+                                [[15, 12], [3, 2]],
+                              ]
+    num_robots = 3
+    """
     #"""                        # start   goal
     multi_robot_config_list = [
                                 [[0, 0], [6, 10]],
@@ -290,7 +299,7 @@ def main():
                                         goal=multi_robot_config_list[i][1],
                                         rand_area=space_size,
                                         obstacle_list=obstacle_list,
-                                        max_iter=50))
+                                        max_iter=100))
 
     start_time = time.time()
 
@@ -321,15 +330,7 @@ def main():
     # Draw final path
     if show_animation:
         draw_graph_multi_robot(rrt_star_robots, path_list)
-        """
-        for i in range(0, num_robots):
-            rrt_star_robots[i].draw_graph()
-            if path_list[i]:
-                plt.plot([x for (x, y) in path_list[i]], [y for (x, y) in path_list[i]], '-r')
-            plt.grid(True)
-            plt.pause(0.01)  # Need for Mac
-        plt.show()
-        """
+
 
 if __name__ == '__main__':
     main()
