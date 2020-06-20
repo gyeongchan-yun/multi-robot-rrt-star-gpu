@@ -18,21 +18,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)) +
                 "/../RRT/")
 
 try:
-    from rrt import RRT
+    from rrt_org import RRT
 except ImportError:
     raise
-
-show_animation = True
 
 import threading
 from queue import Queue
 
-# -- PyCUDA -- #
-import numpy
-import pycuda.autoinit
-import pycuda.driver as cuda
-from pycuda.compiler import SourceModule
-# ------------ #
+show_animation = True
 
 # -- Global variables for multi-robot -- #
 robot_positions = []
@@ -59,7 +52,7 @@ class RRTStar(RRT):
                  path_resolution=1.0,
                  goal_sample_rate=20,
                  max_iter=300,
-                 connect_circle_dist=50.0
+                 connect_circle_dist=5000.0
                  ):
         super().__init__(start, goal, obstacle_list,
                          rand_area, expand_dis, path_resolution, goal_sample_rate, max_iter)
@@ -84,8 +77,6 @@ class RRTStar(RRT):
         search_until_max_iter: search until max iteration for path improving or not
         """
         global robot_positions
-        dev = cuda.Device(0)
-        ctx = dev.make_context()
         thd_name = threading.currentThread().getName()
         thd_idx = int(thd_name.split('-')[-1])
         # log_fn(thd_name, "thread name: {}".format(thd_name))
@@ -120,39 +111,6 @@ class RRTStar(RRT):
                     lock.release()
                     self.node_list.append(new_node)
                     self.rewire(new_node, near_inds)
-            # ----------------------------------------#
-            '''
-            if i < 10:
-                #dev = cuda.Device(0)
-                #ctx = dev.make_context()
-                a = numpy.random.randn(4,4)
-                a = a.astype(numpy.float32) # only support single precision.
-                log_fn(thd_name, a)
-                # To allocate device memory
-                a_gpu = cuda.mem_alloc(a.nbytes)
-
-                # Transfer the data to the GPU (Host to Device)
-                cuda.memcpy_htod(a_gpu, a)
-
-                mod = SourceModule("""
-                  __global__ void doublify(float *a)
-                  {
-                    int idx = threadIdx.x + threadIdx.y*4;
-                    a[idx] *= 2;
-                  }
-                  """)
-
-                func = mod.get_function("doublify")
-                func(a_gpu, block=(4,4,1))
-
-                a_doubled = numpy.empty_like(a)
-
-                cuda.memcpy_dtoh(a_doubled, a_gpu)
-                log_fn(thd_name, a_doubled)
-                log_fn(thd_name, a)
-                #ctx.pop()
-            # ----------------------------------------#
-            '''
             """
             lock.acquire()
             if animation and i % 5 == 0:
@@ -162,7 +120,6 @@ class RRTStar(RRT):
             if (not search_until_max_iter) and new_node:  # check reaching the goal
                 last_index = self.search_best_goal_node()
                 if last_index:
-                    ctx.pop()
                     ret_queue.put(self.generate_final_course(last_index))
                     return self.generate_final_course(last_index)
 
@@ -170,11 +127,9 @@ class RRTStar(RRT):
         # log_fn(thd_name, "length of node_list: {}".format(len(self.node_list)))
         last_index = self.search_best_goal_node()
         if last_index:
-            ctx.pop()
             ret_queue.put(self.generate_final_course(last_index))
             return self.generate_final_course(last_index)
 
-        ctx.pop()
         ret_queue.put(None)
         return None
 
@@ -277,13 +232,13 @@ def draw_graph_multi_robot(rrt_star_robots, path_list, space_size):
         for (ox, oy, size) in robot.obstacle_list:
             if size <= 0.5:
                 pass
-                # robot.plot_circle(ox, oy, size, color=color)
+                #robot.plot_circle(ox, oy, size, color=color)
             else:
                 robot.plot_circle(ox, oy, size)
-
+        #"""
         for node in robot.node_list:
             plt.plot(node.x, node.y, "o{}".format(color.split('-')[-1]))
-
+        #"""
         plt.plot(robot.start.x, robot.start.y, "x{}".format(color.split('-')[-1]))
         plt.plot(robot.end.x, robot.end.y, "x{}".format(color.split('-')[-1]))
         plt.plot([x for (x, y) in path], [y for (x, y) in path], color)
@@ -300,6 +255,7 @@ def main():
     print("Start " + __file__)
 
     # ====Search Path with RRT====
+    """
     obstacle_list = [
         (5, 5, 1),
         (3, 6, 2),
@@ -310,8 +266,7 @@ def main():
         (8, 10, 1),
         (6, 12, 1),
     ]  # [x,y,size(radius)]
-    #space_size = [-2, 15]
-    space_size = [-2, 110]
+    """
     obstacle_list = [(random.randint(30, 990),random.randint(30, 990), random.randint(10, 20)) for i in range(100)]
     #space_size = [-2, 15]
     space_size = [-2, 1100]
@@ -328,13 +283,6 @@ def main():
     """                        # start   goal
     multi_robot_config_list = [
                                 [[0, 0], [6, 10]],
-                                [[12, 0], [7, 8]],
-                              ]
-    num_robots = 2
-    """
-    """                        # start   goal
-    multi_robot_config_list = [
-                                [[0, 0], [100, 100]],
                                 [[12, 0], [7, 8]],
                               ]
     num_robots = 2
@@ -365,7 +313,6 @@ def main():
                                         goal=multi_robot_config_list[i][1],
                                         rand_area=space_size,
                                         obstacle_list=obstacle_list,
-                                        connect_circle_dist=5000.0,
                                         max_iter=10000))
 
     start_time = time.time()

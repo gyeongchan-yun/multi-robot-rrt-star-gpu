@@ -8,12 +8,20 @@ author: AtsushiSakai(@Atsushi_twi)
 
 import math
 import random
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
 show_animation = True
+
+# -- PyCUDA -- #
+import pycuda.autoinit
+import pycuda.driver as cuda
+from pycuda.compiler import SourceModule
+import pycuda.gpuarray as gpuarray
+# ------------ #
 
 
 class RRT:
@@ -34,7 +42,7 @@ class RRT:
             self.parent = None
 
     def __init__(self, start, goal, obstacle_list, rand_area,
-                 expand_dis=3.0, path_resolution=0.5, goal_sample_rate=5, max_iter=500):
+                 expand_dis=3.0, path_resolution=5, goal_sample_rate=5, max_iter=500):
         """
         Setting Parameter
 
@@ -179,7 +187,7 @@ class RRT:
 
         if node is None:
             return False
-
+        """
         for (ox, oy, size) in obstacleList:
             dx_list = [ox - x for x in node.path_x]
             dy_list = [oy - y for y in node.path_y]
@@ -187,6 +195,53 @@ class RRT:
 
             if min(d_list) <= size ** 2:
                 return False  # collision
+        """
+        #dev = cuda.Device(0)
+        #ctx = dev.make_context()
+        start_time = time.time()
+        for c, (ox, oy, size) in enumerate(obstacleList):
+
+            # print("c: ", c)
+            loop_start_time = time.time()
+            ox_list = [ox for _ in node.path_x]
+            oy_list = [oy for _ in node.path_y]
+            s_list = [size for _ in node.path_x]
+            x_list = [x for x in node.path_x]
+            y_list = [y for y in node.path_y]
+            # print("list prepare: ",time.time() - loop_start_time)
+            # zero_list = [0 for _ in obstacleList]
+            # np_list = [ox_list, oy_list, s_list, zero_list]
+            # np_list = np.array(np_list)
+            # np_list = np_list.astype(np.float32)
+
+            ox_gpu = gpuarray.to_gpu(np.array(ox_list).astype(np.float32))
+            oy_gpu = gpuarray.to_gpu(np.array(oy_list).astype(np.float32))
+
+            x = gpuarray.to_gpu(np.array(x_list).astype(np.float32))
+            y = gpuarray.to_gpu(np.array(y_list).astype(np.float32))
+
+            s_gpu = gpuarray.to_gpu(np.array(s_list).astype(np.float32))
+            # print("initial to_gpu time: ",time.time() - loop_start_time)
+            oxx_gpu, oyy_gpu = (ox_gpu - x).get(), (oy_gpu - y).get()
+            # print("oxx_gpu time: ",time.time() - loop_start_time)
+            oxxx_gpu = gpuarray.to_gpu(np.array(oxx_gpu).astype(np.float32))
+            oyyy_gpu = gpuarray.to_gpu(np.array(oyy_gpu).astype(np.float32))
+
+            result, size = (oxxx_gpu*oxxx_gpu + oyyy_gpu*oyyy_gpu).get(), (s_gpu*s_gpu).get()
+            # print("result time: ",time.time() - loop_start_time)
+            # print("size time: ",time.time() - loop_start_time)
+            # print(result)
+            # print(d_list)
+            # print(size)
+            # ctx.pop()
+            # print("c: ", c)
+            # print("gpu time: ",time.time() - loop_start_time)
+            for (r, s) in zip(result, size):
+                if r <= s:
+                    #ctx.pop()
+                    return False
+
+        #ctx.pop()
 
         return True  # safe
 
@@ -201,7 +256,35 @@ class RRT:
 
 def main(gx=6.0, gy=10.0):
     print("start " + __file__)
+    dev = cuda.Device(0)
+    ctx = dev.make_context()
+    a = np.random.randn(4,4)
+    a = a.astype(np.float32) # only support single precision.
+    thd_name=0
+    print(thd_name, a)
+    # To allocate device memory
+    a_gpu = cuda.mem_alloc(a.nbytes)
 
+    # Transfer the data to the GPU (Host to Device)
+    cuda.memcpy_htod(a_gpu, a)
+
+    mod = SourceModule("""
+      __global__ void doublify(float *a)
+      {
+        int idx = threadIdx.x + threadIdx.y*4;
+        a[idx] *= 2;
+      }
+      """)
+
+    func = mod.get_function("doublify")
+    func(a_gpu, block=(4,4,1))
+
+    a_doubled = np.empty_like(a)
+
+    cuda.memcpy_dtoh(a_doubled, a_gpu)
+    print(thd_name, a_doubled)
+    print(thd_name, a)
+    ctx.pop()
     # ====Search Path with RRT====
     obstacleList = [
         (5, 5, 1),
@@ -213,12 +296,13 @@ def main(gx=6.0, gy=10.0):
         (8, 10, 1)
     ]  # [x, y, radius]
     # Set Initial parameters
+    start_time = time.time()
     rrt = RRT(start=[0, 0],
               goal=[gx, gy],
               rand_area=[-2, 15],
               obstacle_list=obstacleList)
     path = rrt.planning(animation=show_animation)
-
+    print("[INFO] Execution time: {0:.2f} secs".format(time.time() - start_time))
     if path is None:
         print("Cannot find path")
     else:
